@@ -15,11 +15,12 @@ import javax.swing.*;
 import javax.swing.table.DefaultTableModel;
 import java.awt.*;
 import java.time.format.DateTimeFormatter;
-import java.util.ArrayList;
 import java.util.List;
 
 /**
  * Dispatcher window – assign orders to mechanics, overview of all orders.
+ * Fix: zákazky v stave REZERVOVANA sa nedajú priradiť mechanikovi.
+ * Dispečer môže priradiť len zákazky v stave DIAGNOSTIKA alebo CAKA_NA_PRIRADENIE.
  */
 public class DispatcherWindow extends JFrame {
 
@@ -113,6 +114,8 @@ public class DispatcherWindow extends JFrame {
 
     // =========================================================
     // TAB 2 – Assign order
+    // Oprava č.1: zákazku možno priradiť len ak prešla príjmom
+    // (stav DIAGNOSTIKA alebo CAKA_NA_PRIRADENIE) – nie REZERVOVANA
     // =========================================================
     private JPanel buildAssignTab() {
         JPanel p = new JPanel(new BorderLayout(8, 8));
@@ -121,26 +124,35 @@ public class DispatcherWindow extends JFrame {
         JTable unassignedTable = UIUtils.buildTable(new String[]{"ID", "Zákazník", "Popis", "Stav", "Termín"});
         JComboBox<String> mechanicBox = new JComboBox<>();
 
-        // populate
+        JLabel infoLabel = UIUtils.mutedLabel(
+                "ℹ️  Zobrazujú sa len zákazky po príjme vozidla (Diagnostika / Čaká na priradenie).");
+        infoLabel.setBorder(BorderFactory.createEmptyBorder(0, 0, 8, 0));
+
         Runnable refresh = () -> {
             DefaultTableModel m = (DefaultTableModel) unassignedTable.getModel();
             m.setRowCount(0);
             DateTimeFormatter fmt = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm");
             for (Order o : orderService.getAllOrders()) {
-                if (o.getMechanicId() == null || o.getMechanicId().isEmpty()) {
-                    var c = profileManager.findCustomerById(o.getCustomerId());
-                    String custName = c != null ? c.getFullName() : "-";
-                    m.addRow(new Object[]{
-                            o.getOrderId().substring(0, 8), custName,
-                            o.getDescription(), o.getStatus().getDisplayName(),
-                            o.getAppointmentTime() != null ? o.getAppointmentTime().format(fmt) : "-"
-                    });
-                }
+                // Oprava: preskočiť REZERVOVANA a už priradené zákazky
+                boolean assignable = (o.getStatus() == OrderStatus.DIAGNOSTIKA
+                        || o.getStatus() == OrderStatus.CAKA_NA_PRIRADENIE)
+                        && (o.getMechanicId() == null || o.getMechanicId().isEmpty());
+                if (!assignable) continue;
+
+                var c = profileManager.findCustomerById(o.getCustomerId());
+                String custName = c != null ? c.getFullName() : "-";
+                m.addRow(new Object[]{
+                        o.getOrderId().substring(0, 8), custName,
+                        o.getDescription(), o.getStatus().getDisplayName(),
+                        o.getAppointmentTime() != null ? o.getAppointmentTime().format(fmt) : "-"
+                });
             }
             mechanicBox.removeAllItems();
             for (Employee e : ctx.getEmployees().values()) {
                 if (e instanceof Mechanic mech) {
-                    mechanicBox.addItem(mech.getFullName() + " [" + mech.getEmployeeId() + "]");
+                    int load = orderService.getWorkloadOf(mech.getEmployeeId());
+                    mechanicBox.addItem(mech.getFullName() + " [" + mech.getEmployeeId() + "]"
+                            + "  –  zákazky: " + load);
                 }
             }
         };
@@ -157,7 +169,8 @@ public class DispatcherWindow extends JFrame {
             String shortId = (String) unassignedTable.getValueAt(selRow, 0);
 
             String mechEntry = (String) mechanicBox.getSelectedItem();
-            int mechId = Integer.parseInt(mechEntry.replaceAll(".*\\[(\\d+)\\]", "$1"));
+            // parse mechanicId from "[id]" token
+            int mechId = Integer.parseInt(mechEntry.replaceAll(".*\\[(\\d+)\\].*", "$1"));
 
             Order target = orderService.getAllOrders().stream()
                     .filter(o -> o.getOrderId().startsWith(shortId))
@@ -179,6 +192,11 @@ public class DispatcherWindow extends JFrame {
         top.add(refreshBtn);
 
         p.add(UIUtils.sectionLabel("Priradenie zákaziek"), BorderLayout.NORTH);
+        p.add(infoLabel, BorderLayout.NORTH); // note: last NORTH wins in BorderLayout; use wrapper
+        JPanel north = new JPanel(new BorderLayout(0, 4));
+        north.add(UIUtils.sectionLabel("Priradenie zákaziek"), BorderLayout.NORTH);
+        north.add(infoLabel, BorderLayout.SOUTH);
+        p.add(north, BorderLayout.NORTH);
         p.add(new JScrollPane(unassignedTable), BorderLayout.CENTER);
         p.add(top, BorderLayout.SOUTH);
         return p;

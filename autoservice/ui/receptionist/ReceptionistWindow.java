@@ -17,7 +17,9 @@ import java.util.List;
 
 /**
  * Window for Prijímací technik (Reception Technician).
- * Tabs: Rezervácie | Príjem vozidla | Dočasný profil | Notifikácie
+ * Opravy:
+ *  - Príjem vozidla: pole na poznámky + nefunkčné tlačidlo Nahrať fotku
+ *  - Príjem vozidla: zobrazenie servisnej knižky vozidla
  */
 public class ReceptionistWindow extends JFrame {
 
@@ -36,7 +38,7 @@ public class ReceptionistWindow extends JFrame {
         this.employee = employee;
         ctx.getNotificationManager().addInAppListener(notifPanel::addNotification);
         buildUI();
-        setSize(980, 680);
+        setSize(1020, 720);
         setLocationRelativeTo(null);
         setDefaultCloseOperation(EXIT_ON_CLOSE);
         setVisible(true);
@@ -102,6 +104,8 @@ public class ReceptionistWindow extends JFrame {
 
     // =========================================================
     // TAB 2 – Receive vehicle (UC05)
+    // Oprava č.2: poznámky + tlačidlo fotky
+    // Oprava č.3: servisná knižka vozidla
     // =========================================================
     private JPanel buildReceiveVehicleTab() {
         JPanel p = new JPanel(new BorderLayout(8, 8));
@@ -110,19 +114,90 @@ public class ReceptionistWindow extends JFrame {
         activeOrderTable = UIUtils.buildTable(new String[]{"ID", "Zákazník", "Popis", "Termín", "Stav"});
         refreshActiveOrders();
 
+        // ── Poznámky pri príjme ───────────────────────────────
+        JTextArea receiveNotesArea = new JTextArea(3, 40);
+        receiveNotesArea.setLineWrap(true);
+        receiveNotesArea.setWrapStyleWord(true);
+        receiveNotesArea.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(UIUtils.BORDER_COLOR),
+                BorderFactory.createEmptyBorder(4, 6, 4, 6)));
+
+        JButton photoBtn = new JButton("📷 Nahrať fotky vozidla");
+        photoBtn.setEnabled(false); // nefunkčné – placeholder
+        photoBtn.setToolTipText("Funkcia nahrávania fotografií nie je v demo verzii dostupná.");
+        photoBtn.setForeground(UIUtils.TEXT_MUTED);
+
+        JPanel notesPanel = new JPanel(new BorderLayout(6, 4));
+        notesPanel.setBorder(BorderFactory.createTitledBorder("Poznámky pri príjme vozidla"));
+        notesPanel.add(new JScrollPane(receiveNotesArea), BorderLayout.CENTER);
+        notesPanel.add(photoBtn, BorderLayout.EAST);
+
+        // ── Servisná knižka ───────────────────────────────────
+        JTextArea serviceBookArea = new JTextArea(6, 40);
+        serviceBookArea.setEditable(false);
+        serviceBookArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        serviceBookArea.setBackground(UIUtils.ACCENT_LIGHT);
+        serviceBookArea.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(UIUtils.BORDER_COLOR),
+                BorderFactory.createEmptyBorder(4, 6, 4, 6)));
+        JPanel serviceBookPanel = new JPanel(new BorderLayout());
+        serviceBookPanel.setBorder(BorderFactory.createTitledBorder("📖 Servisná knižka vozidla"));
+        serviceBookPanel.add(new JScrollPane(serviceBookArea), BorderLayout.CENTER);
+
+        // ── Aktualizovať servisnú knižku pri výbere zákazky ──
+        activeOrderTable.getSelectionModel().addListSelectionListener(ev -> {
+            if (ev.getValueIsAdjusting()) return;
+            int row = activeOrderTable.getSelectedRow();
+            if (row < 0) { serviceBookArea.setText(""); return; }
+            String shortId = (String) activeOrderTable.getValueAt(row, 0);
+            Order target = orderService.getAllOrders().stream()
+                    .filter(o -> o.getOrderId().startsWith(shortId))
+                    .findFirst().orElse(null);
+            if (target == null || target.getVehicleId() == null) {
+                serviceBookArea.setText("Vozidlo nenájdené.");
+                return;
+            }
+            VehicleCard card = vehicleManager.getVehicleCard(target.getVehicleId());
+            if (card == null) {
+                serviceBookArea.setText("Servisná knižka nie je dostupná.");
+                return;
+            }
+            List<String> history = card.getServiceHistory();
+            if (history.isEmpty()) {
+                serviceBookArea.setText("Žiadne záznamy v servisnej knižke.");
+            } else {
+                StringBuilder sb = new StringBuilder();
+                for (String entry : history) {
+                    sb.append(entry).append("\n").append("-".repeat(60)).append("\n");
+                }
+                serviceBookArea.setText(sb.toString());
+                serviceBookArea.setCaretPosition(0);
+            }
+        });
+
+        // ── Tlačidlá ─────────────────────────────────────────
         JButton receiveBtn  = UIUtils.primaryButton("📥 Prijať vozidlo");
         JButton handoverBtn = UIUtils.successButton("📤 Odovzdať vozidlo zákazníkovi");
         JButton refreshBtn  = UIUtils.primaryButton("🔄 Obnoviť");
 
-        receiveBtn.addActionListener(e -> doReceiveVehicle());
+        receiveBtn.addActionListener(e -> doReceiveVehicle(receiveNotesArea));
         handoverBtn.addActionListener(e -> doHandoverVehicle());
-        refreshBtn.addActionListener(e -> refreshActiveOrders());
+        refreshBtn.addActionListener(e -> { refreshActiveOrders(); serviceBookArea.setText(""); });
+
+        // ── Layout ────────────────────────────────────────────
+        JPanel southForms = new JPanel(new GridLayout(2, 1, 0, 6));
+        southForms.add(notesPanel);
+        southForms.add(serviceBookPanel);
+
+        JPanel buttons = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        buttons.add(receiveBtn); buttons.add(handoverBtn); buttons.add(refreshBtn);
+
+        JPanel south = new JPanel(new BorderLayout(0, 4));
+        south.add(southForms, BorderLayout.CENTER);
+        south.add(buttons, BorderLayout.SOUTH);
 
         p.add(UIUtils.sectionLabel("Príjem a odovzdanie vozidla"), BorderLayout.NORTH);
         p.add(new JScrollPane(activeOrderTable), BorderLayout.CENTER);
-
-        JPanel south = new JPanel(new FlowLayout(FlowLayout.LEFT));
-        south.add(receiveBtn); south.add(handoverBtn); south.add(refreshBtn);
         p.add(south, BorderLayout.SOUTH);
         return p;
     }
@@ -144,7 +219,7 @@ public class ReceptionistWindow extends JFrame {
         }
     }
 
-    private void doReceiveVehicle() {
+    private void doReceiveVehicle(JTextArea notesArea) {
         int row = activeOrderTable.getSelectedRow();
         if (row < 0) { UIUtils.showError(this, "Vyberte zákazku."); return; }
         String shortId = (String) activeOrderTable.getValueAt(row, 0);
@@ -152,8 +227,18 @@ public class ReceptionistWindow extends JFrame {
                 .filter(o -> o.getOrderId().startsWith(shortId))
                 .findFirst().orElse(null);
         if (target == null) return;
+
+        // Pridať poznámky technika do zákazky
+        String notes = notesArea.getText().trim();
+        if (!notes.isEmpty()) {
+            String existing = target.getNotes() != null ? target.getNotes() + "\n" : "";
+            target.setNotes(existing + "[Príjem] " + notes);
+            ctx.getOrderRepository().save(target);
+        }
+
         orderService.receiveVehicle(target.getOrderId(), List.of());
-        UIUtils.showInfo(this, "Vozidlo prijaté do servisu. Zákazka prešla do stavu: Diagnostika.");
+        notesArea.setText("");
+        UIUtils.showInfo(this, "Vozidlo prijaté do servisu.\nZákazka prešla do stavu: Diagnostika.");
         refreshActiveOrders();
         notifPanel.addNotification("Vozidlo prijaté – zákazka #" + shortId);
     }
@@ -222,7 +307,6 @@ public class ReceptionistWindow extends JFrame {
 
             TempProfile tp = profileManager.createTempProfile(first, last, phone, email);
 
-            // add vehicle if VIN provided
             String vin = vinF.getText().trim().toUpperCase();
             String plate = plateF.getText().trim().toUpperCase();
             Vehicle vehicle = null;
@@ -236,7 +320,6 @@ public class ReceptionistWindow extends JFrame {
                 tp.addVehicle(vehicle);
             }
 
-            // create order for this temp profile with a temp customer stub
             Customer tempCust = new Customer(first, last, email.isEmpty() ? phone + "@temp.local" : email, phone, "");
             tempCust.setTemporary(true);
             profileManager.saveProfile(tempCust);

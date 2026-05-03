@@ -12,12 +12,15 @@ import com.autoservice.ui.LoginWindow;
 import javax.swing.*;
 import javax.swing.table.DefaultTableModel;
 import java.awt.*;
+import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
 
 /**
- * Mechanic window – view assigned orders, update status, add work items,
- * flag additional faults (UC07 trigger), complete repair.
+ * Mechanic window.
+ * Opravy:
+ *  - Oprava č.4: Mechanik zadá výsledok diagnostiky do textového poľa
+ *  - Oprava č.5: Po dokončení opravy sa vykonané práce zapíšu do servisnej knižky
  */
 public class MechanicWindow extends JFrame {
 
@@ -29,21 +32,19 @@ public class MechanicWindow extends JFrame {
     private JTable assignedTable;
     private JTable workItemTable;
     private JTable sparePartTable;
-    private Order selectedOrder = null;
 
     private final NotificationPanel notifPanel = new NotificationPanel("Mechanik");
 
     public MechanicWindow(Mechanic employee) {
         super("AutoServis – " + employee.getRole() + ": " + employee.getFullName());
         this.employee = employee;
-        // filter notifications for this mechanic
         ctx.getNotificationManager().addInAppListener(msg -> {
             if (msg.contains("MECHANIK " + employee.getEmployeeId()) || msg.contains("MECHANIK")) {
                 notifPanel.addNotification(msg);
             }
         });
         buildUI();
-        setSize(1020, 700);
+        setSize(1020, 720);
         setLocationRelativeTo(null);
         setDefaultCloseOperation(EXIT_ON_CLOSE);
         setVisible(true);
@@ -68,6 +69,8 @@ public class MechanicWindow extends JFrame {
 
     // =========================================================
     // TAB 1 – Assigned orders
+    // Oprava č.4: pole na výsledok diagnostiky
+    // Oprava č.5: zápis do servisnej knižky pri dokončení
     // =========================================================
     private JPanel buildAssignedTab() {
         JPanel p = new JPanel(new BorderLayout(8, 8));
@@ -77,10 +80,47 @@ public class MechanicWindow extends JFrame {
                 new String[]{"ID", "Popis", "Stav", "Termín", "Cena (€)"});
         refreshAssigned();
 
-        // status buttons
+        // ── Detail zákazky ────────────────────────────────────
+        JTextArea detailArea = new JTextArea(4, 40);
+        detailArea.setEditable(false);
+        detailArea.setBorder(BorderFactory.createTitledBorder("Detail zákazky"));
+
+        // ── Výsledok diagnostiky (oprava č.4) ────────────────
+        JTextArea diagResultArea = new JTextArea(3, 40);
+        diagResultArea.setLineWrap(true);
+        diagResultArea.setWrapStyleWord(true);
+        diagResultArea.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(UIUtils.BORDER_COLOR),
+                BorderFactory.createEmptyBorder(4, 6, 4, 6)));
+        JPanel diagPanel = new JPanel(new BorderLayout(4, 0));
+        diagPanel.setBorder(BorderFactory.createTitledBorder("🔍 Výsledok diagnostiky"));
+        diagPanel.add(new JScrollPane(diagResultArea), BorderLayout.CENTER);
+
+        JButton saveDiagBtn = UIUtils.primaryButton("Uložiť výsledok diagnostiky");
+        saveDiagBtn.addActionListener(e -> {
+            Order o = getSelectedOrder();
+            if (o == null) { UIUtils.showError(this, "Vyberte zákazku."); return; }
+            if (o.getStatus() != OrderStatus.DIAGNOSTIKA) {
+                UIUtils.showError(this, "Zákazka musí byť v stave Diagnostika."); return;
+            }
+            String result = diagResultArea.getText().trim();
+            if (result.isEmpty()) { UIUtils.showError(this, "Zadajte výsledok diagnostiky."); return; }
+
+            // Uloží výsledok diagnostiky do poznámok zákazky
+            String existing = o.getNotes() != null ? o.getNotes() + "\n" : "";
+            o.setNotes(existing + "[Diagnostika] " + result);
+            ctx.getOrderRepository().save(o);
+
+            UIUtils.showInfo(this, "Výsledok diagnostiky uložený.");
+            diagResultArea.setText("");
+            updateDetail(detailArea);
+        });
+        diagPanel.add(saveDiagBtn, BorderLayout.EAST);
+
+        // ── Tlačidlá stavov ───────────────────────────────────
         JButton startBtn    = UIUtils.primaryButton("▶ Spustiť diagnostiku");
         JButton repairBtn   = UIUtils.primaryButton("🔧 Začať opravu");
-        JButton completeBtn = UIUtils.successButton("✅ Dokončiť opravu");
+        JButton completeBtn = UIUtils.successButton(" Dokončiť opravu");
         JButton refreshBtn  = UIUtils.primaryButton("🔄 Obnoviť");
 
         startBtn.addActionListener(e -> changeStatus(OrderStatus.DIAGNOSTIKA));
@@ -88,10 +128,6 @@ public class MechanicWindow extends JFrame {
         completeBtn.addActionListener(e -> doComplete());
         refreshBtn.addActionListener(e -> refreshAssigned());
 
-        // detail panel
-        JTextArea detailArea = new JTextArea(5, 40);
-        detailArea.setEditable(false);
-        detailArea.setBorder(BorderFactory.createTitledBorder("Detail zákazky"));
         assignedTable.getSelectionModel().addListSelectionListener(ev -> {
             if (!ev.getValueIsAdjusting()) updateDetail(detailArea);
         });
@@ -100,8 +136,9 @@ public class MechanicWindow extends JFrame {
         buttons.add(startBtn); buttons.add(repairBtn);
         buttons.add(completeBtn); buttons.add(refreshBtn);
 
-        JPanel south = new JPanel(new BorderLayout());
-        south.add(new JScrollPane(detailArea), BorderLayout.CENTER);
+        JPanel south = new JPanel(new BorderLayout(0, 4));
+        south.add(new JScrollPane(detailArea), BorderLayout.NORTH);
+        south.add(diagPanel, BorderLayout.CENTER);
         south.add(buttons, BorderLayout.SOUTH);
 
         p.add(UIUtils.sectionLabel("Priradené zákazky – " + employee.getFullName()), BorderLayout.NORTH);
@@ -148,11 +185,54 @@ public class MechanicWindow extends JFrame {
         refreshAssigned();
     }
 
+    /**
+     * Dokončenie opravy – oprava č.5:
+     * Vykonané práce sa zapíšu do servisnej knižky vozidla.
+     */
     private void doComplete() {
         Order o = getSelectedOrder();
         if (o == null) { UIUtils.showError(this, "Vyberte zákazku."); return; }
+
+        // Zostaviť záznam pre servisnú knižku
+        DateTimeFormatter fmt = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm");
+        StringBuilder record = new StringBuilder();
+        record.append("Dátum: ").append(LocalDateTime.now().format(fmt)).append("\n");
+        record.append("Mechanik: ").append(employee.getFullName()).append("\n");
+        record.append("Zákazka: #").append(o.getOrderId().substring(0, 8)).append("\n");
+        record.append("Popis: ").append(o.getDescription()).append("\n");
+
+        if (o.getNotes() != null && !o.getNotes().isBlank()) {
+            record.append("Poznámky/Diagnostika: ").append(o.getNotes()).append("\n");
+        }
+
+        if (!o.getWorkItems().isEmpty()) {
+            record.append("Vykonané práce:\n");
+            for (WorkItem wi : o.getWorkItems()) {
+                record.append("  • ").append(wi.getDescription())
+                        .append(" (").append(String.format("%.2f €", wi.getLaborCost())).append(")\n");
+            }
+        }
+        if (!o.getSpareParts().isEmpty()) {
+            record.append("Použité diely:\n");
+            for (SparePart sp : o.getSpareParts()) {
+                record.append("  • ").append(sp.getName())
+                        .append(" (qty: ").append(sp.getQuantity())
+                        .append(", ").append(String.format("%.2f €", sp.getUnitPrice())).append("/ks)\n");
+            }
+        }
+        record.append("Celková cena: ").append(String.format("%.2f €", o.getTotalCost()));
+
+        // Zapísať do servisnej knižky
+        if (o.getVehicleId() != null) {
+            VehicleCard card = ctx.getVehicleManager().getVehicleCard(o.getVehicleId());
+            if (card != null) {
+                card.addServiceRecord(record.toString());
+            }
+        }
+
+        // Uzavrieť zákazku
         orderService.completeRepair(o.getOrderId());
-        UIUtils.showInfo(this, "Oprava dokončená. Zákazka uzavretá.");
+        UIUtils.showInfo(this, "Oprava dokončená. Zákazka uzavretá.\nZáznam bol pridaný do servisnej knižky vozidla.");
         refreshAssigned();
     }
 
@@ -171,7 +251,6 @@ public class MechanicWindow extends JFrame {
         JPanel p = new JPanel(new BorderLayout(8, 8));
         p.setBorder(BorderFactory.createEmptyBorder(12, 12, 12, 12));
 
-        // order selector
         JComboBox<String> orderBox = new JComboBox<>();
         Runnable fillOrders = () -> {
             orderBox.removeAllItems();
@@ -181,13 +260,12 @@ public class MechanicWindow extends JFrame {
         };
         fillOrders.run();
 
-        workItemTable = UIUtils.buildTable(new String[]{"Popis práce", "Cena práce (€)"});
+        workItemTable  = UIUtils.buildTable(new String[]{"Popis práce", "Cena práce (€)"});
         sparePartTable = UIUtils.buildTable(new String[]{"Diel", "Qty", "Cena/ks (€)"});
 
-        // add work item
-        JTextField wiDescF  = new JTextField(18);
-        JTextField wiCostF  = new JTextField(6);
-        JButton addWiBtn = UIUtils.primaryButton("+ Pridať prácu");
+        JTextField wiDescF = new JTextField(18);
+        JTextField wiCostF = new JTextField(6);
+        JButton addWiBtn   = UIUtils.primaryButton("+ Pridať prácu");
         addWiBtn.addActionListener(e -> {
             if (orderBox.getSelectedIndex() < 0) return;
             String desc = wiDescF.getText().trim();
@@ -207,12 +285,9 @@ public class MechanicWindow extends JFrame {
             wiDescF.setText(""); wiCostF.setText("");
         });
 
-        // ── Požiadavka na diel (Varianta A) ──────────────────
-        // Mechanik zadá len názov + množstvo, cenu doplní skladník
         JTextField reqNameF = UIUtils.formField(18);
         JTextField reqQtyF  = new JTextField("1", 4);
         JButton requestPartBtn = UIUtils.primaryButton("📋 Požiadať o diel");
-
         requestPartBtn.addActionListener(e -> {
             String name = reqNameF.getText().trim();
             if (name.isEmpty()) { UIUtils.showError(this, "Zadajte názov dielu."); return; }
@@ -220,26 +295,17 @@ public class MechanicWindow extends JFrame {
             try { qty = Integer.parseInt(reqQtyF.getText().trim()); } catch (NumberFormatException ignored) {}
             Order o = resolveSelectedOrder(orderBox);
             if (o == null) return;
-
-            // vytvor požiadavku bez ceny
-            PartRequest req = inventory.createRequest(
-                    o.getOrderId(), employee.getEmail(), name, qty);
-
-            // zákazka → čaká na diely
+            PartRequest req = inventory.createRequest(o.getOrderId(), employee.getEmail(), name, qty);
             orderService.setStatus(o.getOrderId(), OrderStatus.CAKA_NA_DIELY);
             ctx.getOrderRepository().save(o);
-
-            // notifikuj skladníka
             ctx.getNotificationManager().notifyStorekeeper("SKLADNIK",
                     "📋 Nová požiadavka [" + req.getRequestId() + "]: "
                             + name + " (qty: " + qty + ") – zákazka "
                             + o.getOrderId().substring(0, 8));
-
             UIUtils.showInfo(this, "Požiadavka odoslaná skladníkovi.\n"
                     + "Diel: " + name + " (qty: " + qty + ")\n"
                     + "ID požiadavky: " + req.getRequestId() + "\n"
                     + "Zákazka → Čaká na diely.");
-
             reqNameF.setText(""); reqQtyF.setText("1");
             refreshAssigned();
         });
@@ -249,7 +315,6 @@ public class MechanicWindow extends JFrame {
             if (o != null) refreshWorkTables(o);
         });
 
-        // layout
         JPanel top = new JPanel(new FlowLayout(FlowLayout.LEFT));
         top.add(new JLabel("Zákazka:")); top.add(orderBox);
 
@@ -272,9 +337,9 @@ public class MechanicWindow extends JFrame {
         JPanel forms = new JPanel(new GridLayout(2, 1));
         forms.add(wiForm); forms.add(reqForm);
 
-        p.add(top, BorderLayout.NORTH);
+        p.add(top,    BorderLayout.NORTH);
         p.add(tables, BorderLayout.CENTER);
-        p.add(forms, BorderLayout.SOUTH);
+        p.add(forms,  BorderLayout.SOUTH);
         return p;
     }
 
@@ -300,7 +365,7 @@ public class MechanicWindow extends JFrame {
     }
 
     // =========================================================
-    // TAB 3 – Additional faults (triggers UC07)
+    // TAB 3 – Additional faults (UC07)
     // =========================================================
     private JPanel buildFaultsTab() {
         JPanel p = new JPanel(new BorderLayout(8, 8));
@@ -329,23 +394,17 @@ public class MechanicWindow extends JFrame {
             Order o = orders.get(idx);
             String desc = faultDesc.getText().trim();
             if (desc.isEmpty()) { UIUtils.showError(this, "Zadajte popis závady."); return; }
-
             double cost = 0;
             try { cost = Double.parseDouble(estCostF.getText().trim()); } catch (NumberFormatException ignored) {}
-
-            // add as work item and set status to waiting for approval
             WorkItem fault = new WorkItem(java.util.UUID.randomUUID().toString().substring(0, 8),
                     "[DODATOČNÁ ZÁVADA] " + desc, cost);
             o.addWorkItem(fault);
             o.calculateCost(o.getWorkItems(), o.getSpareParts());
             orderService.setStatus(o.getOrderId(), OrderStatus.CAKA_NA_SCHVALENIE);
-
-            // notify customer via in-app (in real system → SMS/email)
             ctx.getNotificationManager().notifyCustomer(o.getCustomerId(),
-                    "Mechanik zistil dodatočnú závadu na Vašom vozidle: " + desc +
-                            ". Odhadovaná cena: " + String.format("%.2f €", cost) +
-                            ". Prosíme o schválenie v zákazníckej aplikácii.");
-
+                    "Mechanik zistil dodatočnú závadu na Vašom vozidle: " + desc
+                            + ". Odhadovaná cena: " + String.format("%.2f €", cost)
+                            + ". Prosíme o schválenie v zákazníckej aplikácii.");
             UIUtils.showInfo(this, "Závada nahlásená. Zákazka čaká na schválenie zákazníka.");
             faultDesc.setText(""); estCostF.setText("0.00");
             fill.run();

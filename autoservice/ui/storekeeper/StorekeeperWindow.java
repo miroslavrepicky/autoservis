@@ -18,6 +18,9 @@ import java.awt.*;
 /**
  * Storekeeper window – manage spare parts inventory, confirm deliveries,
  * view orders waiting for parts.
+ *
+ * Oprava: potvrdenie doručenia dielu používa combobox objednaných dielov
+ * namiesto ručného zadávania ID.
  */
 public class StorekeeperWindow extends JFrame {
 
@@ -30,6 +33,10 @@ public class StorekeeperWindow extends JFrame {
     private JTable waitingOrdersTable;
     private final NotificationPanel notifPanel = new NotificationPanel("Skladník");
 
+    // Combobox pre potvrdenie doručenia – referencie kvôli refreshu
+    private JComboBox<OrderedPartItem> deliveryCombo;
+    private JTextField deliveryQtyF;
+
     public StorekeeperWindow(Storekeeper employee) {
         super("AutoServis – " + employee.getRole() + ": " + employee.getFullName());
         this.employee = employee;
@@ -39,7 +46,7 @@ public class StorekeeperWindow extends JFrame {
             }
         });
         buildUI();
-        setSize(900, 650);
+        setSize(900, 680);
         setLocationRelativeTo(null);
         setDefaultCloseOperation(EXIT_ON_CLOSE);
         setVisible(true);
@@ -57,7 +64,7 @@ public class StorekeeperWindow extends JFrame {
         tabs.addTab("⏳ Zákazky čakajúce na diely",  buildWaitingOrdersTab());
         tabs.addTab("🔔 Notifikácie",                notifPanel);
         tabs.addChangeListener(e -> {
-            if (tabs.getSelectedIndex() == 0) refreshInventory();
+            if (tabs.getSelectedIndex() == 0) { refreshInventory(); refreshDeliveryCombo(); }
             if (tabs.getSelectedIndex() == 1) refreshWaitingOrders();
         });
         add(tabs, BorderLayout.CENTER);
@@ -73,7 +80,7 @@ public class StorekeeperWindow extends JFrame {
         inventoryTable = UIUtils.buildTable(new String[]{"ID dielu", "Názov", "Cena/ks (€)", "Na sklade"});
         refreshInventory();
 
-        // Add new part
+        // ── Pridať nový diel ──────────────────────────────────
         JTextField idF    = new JTextField(8);
         JTextField nameF  = new JTextField(16);
         JTextField priceF = new JTextField(6);
@@ -96,38 +103,59 @@ public class StorekeeperWindow extends JFrame {
             inventory.addPart(sp, qty);
             UIUtils.showInfo(this, "Diel " + name + " pridaný na sklad (qty: " + qty + ").");
             refreshInventory();
+            refreshDeliveryCombo();
             idF.setText(""); nameF.setText(""); priceF.setText(""); qtyF.setText("");
         });
 
-        // Confirm delivery
-        JTextField deliveryPartIdF = new JTextField(10);
-        JTextField deliveryQtyF    = new JTextField(4);
-        JButton confirmBtn = UIUtils.successButton("✅ Potvrdiť doručenie");
+        // ── Potvrdiť doručenie – combobox objednaných dielov ──
+        deliveryCombo = new JComboBox<>();
+        deliveryQtyF  = new JTextField("1", 4);
+        refreshDeliveryCombo();
+
+        JButton confirmBtn = UIUtils.successButton(" Potvrdiť doručenie");
         confirmBtn.addActionListener(e -> {
-            String partId = deliveryPartIdF.getText().trim().toUpperCase();
-            if (partId.isEmpty()) { UIUtils.showError(this, "Zadajte ID dielu."); return; }
+            OrderedPartItem selected = (OrderedPartItem) deliveryCombo.getSelectedItem();
+            if (selected == null) { UIUtils.showError(this, "Žiadne objednané diely na potvrdenie."); return; }
             int qty = 1;
             try { qty = Integer.parseInt(deliveryQtyF.getText().trim()); } catch (NumberFormatException ignored) {}
-            SparePart sp = inventory.getAllParts().stream()
-                    .filter(part -> part.getPartId().equals(partId))
-                    .findFirst().orElse(null);
-            if (sp == null) {
-                UIUtils.showError(this, "Diel s ID " + partId + " neexistuje v systéme.");
-                return;
-            }
-            inventory.addPart(sp, qty);
-            ctx.getNotificationManager().notifyEmployee("mechanic",
-                    "Diel " + sp.getName() + " bol doručený na sklad (qty: " + qty + ").");
-            UIUtils.showInfo(this, "Doručenie potvrdené. Sklad aktualizovaný.");
-            refreshInventory();
-            deliveryPartIdF.setText(""); deliveryQtyF.setText("");
 
-            // check if any waiting orders can now proceed
-            checkAndNotifyWaitingOrders(sp.getPartId());
+            if (selected.isFromInventory()) {
+                // Diel existuje v sklade – len navýšiť zásoby
+                SparePart sp = selected.getSparePart();
+                inventory.addPart(sp, qty);
+                ctx.getNotificationManager().notifyEmployee("mechanic",
+                        "Diel " + sp.getName() + " bol doručený na sklad (qty: " + qty + ").");
+                UIUtils.showInfo(this, "Doručenie potvrdené. Sklad aktualizovaný.");
+                checkAndNotifyWaitingOrders(sp.getPartId());
+            } else {
+                // Diel pochádza z požiadavky mechanika – označiť ako doručený
+                PartRequest req = selected.getPartRequest();
+                inventory.deliverRequest(req.getRequestId());
+
+                // Vytvoriť/nájsť SparePart v sklade a pridať qty
+                String partId = "REQ-" + req.getRequestId();
+                SparePart sp = new SparePart(partId, req.getPartName(),
+                        req.getFinalPrice(), String.valueOf(qty));
+                inventory.addPart(sp, qty);
+
+                ctx.getNotificationManager().notifyMechanic(req.getMechanicId(),
+                        "Diel \"" + req.getPartName() + "\" bol doručený na sklad (qty: " + qty + ").");
+                UIUtils.showInfo(this, "Doručenie potvrdené.\nDiel: " + req.getPartName()
+                        + "\nZákazka: " + req.getOrderId().substring(0, 8));
+                checkAndNotifyWaitingOrders(partId);
+            }
+
+            refreshInventory();
+            refreshDeliveryCombo();
+            deliveryQtyF.setText("1");
         });
 
+        JButton refreshDeliveryBtn = UIUtils.outlineButton("Obnoviť zoznam");
+        refreshDeliveryBtn.addActionListener(e -> refreshDeliveryCombo());
+
+        // ── Formuláre ─────────────────────────────────────────
         JPanel addForm = new JPanel(new FlowLayout(FlowLayout.LEFT));
-        addForm.setBorder(BorderFactory.createTitledBorder("Pridať nový diel"));
+        addForm.setBorder(BorderFactory.createTitledBorder("Pridať nový diel na sklad"));
         addForm.add(new JLabel("ID:")); addForm.add(idF);
         addForm.add(new JLabel("Názov:")); addForm.add(nameF);
         addForm.add(new JLabel("Cena €:")); addForm.add(priceF);
@@ -136,24 +164,56 @@ public class StorekeeperWindow extends JFrame {
 
         JPanel deliveryForm = new JPanel(new FlowLayout(FlowLayout.LEFT));
         deliveryForm.setBorder(BorderFactory.createTitledBorder("Potvrdiť doručenie dielu"));
-        deliveryForm.add(new JLabel("ID dielu:")); deliveryForm.add(deliveryPartIdF);
-        deliveryForm.add(new JLabel("Qty:")); deliveryForm.add(deliveryQtyF);
+        deliveryForm.add(new JLabel("Diel:"));
+        deliveryCombo.setPreferredSize(new Dimension(320, 26));
+        deliveryForm.add(deliveryCombo);
+        deliveryForm.add(new JLabel("Qty:"));
+        deliveryForm.add(deliveryQtyF);
         deliveryForm.add(confirmBtn);
+        deliveryForm.add(refreshDeliveryBtn);
 
-        JButton refreshBtn = UIUtils.primaryButton("🔄 Obnoviť");
-        refreshBtn.addActionListener(e -> refreshInventory());
+        JButton refreshInventoryBtn = UIUtils.primaryButton("Obnoviť sklad");
+        refreshInventoryBtn.addActionListener(e -> refreshInventory());
+        JPanel rPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        rPanel.add(refreshInventoryBtn);
 
         JPanel south = new JPanel(new GridLayout(3, 1));
         south.add(addForm);
         south.add(deliveryForm);
-        JPanel rPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
-        rPanel.add(refreshBtn);
         south.add(rPanel);
 
         p.add(UIUtils.sectionLabel("Sklad náhradných dielov"), BorderLayout.NORTH);
         p.add(new JScrollPane(inventoryTable), BorderLayout.CENTER);
         p.add(south, BorderLayout.SOUTH);
         return p;
+    }
+
+    /**
+     * Naplní combobox doručenia:
+     * 1. Objednané diely z požiadaviek mechanikov (stav ORDERED)
+     * 2. Existujúce diely v sklade (pre doplnenie zásob)
+     */
+    private void refreshDeliveryCombo() {
+        if (deliveryCombo == null) return;
+        deliveryCombo.removeAllItems();
+
+        // Najprv – požiadavky mechanikov v stave ORDERED (priorita)
+        boolean hasOrdered = false;
+        for (PartRequest req : inventory.getAllRequests()) {
+            if (req.getStatus() == PartRequest.Status.ORDERED) {
+                deliveryCombo.addItem(new OrderedPartItem(req));
+                hasOrdered = true;
+            }
+        }
+
+        // Potom – existujúce diely v sklade (doplnenie)
+        for (SparePart sp : inventory.getAllParts()) {
+            deliveryCombo.addItem(new OrderedPartItem(sp));
+        }
+
+        if (deliveryCombo.getItemCount() == 0) {
+            deliveryCombo.addItem(null); // prázdny stav
+        }
     }
 
     private void refreshInventory() {
@@ -170,27 +230,8 @@ public class StorekeeperWindow extends JFrame {
     }
 
     // =========================================================
-    // TAB 2 – Orders waiting for parts
+    // TAB 2 – Mechanic part requests
     // =========================================================
-    private JPanel buildWaitingOrdersTab() {
-        JPanel p = new JPanel(new BorderLayout(8, 8));
-        p.setBorder(BorderFactory.createEmptyBorder(12, 12, 12, 12));
-
-        waitingOrdersTable = UIUtils.buildTable(
-                new String[]{"ID zákazky", "Popis", "Potrebné diely"});
-        refreshWaitingOrders();
-
-        JButton refreshBtn = UIUtils.primaryButton("🔄 Obnoviť");
-        refreshBtn.addActionListener(e -> refreshWaitingOrders());
-
-        p.add(UIUtils.sectionLabel("Zákazky čakajúce na diely"), BorderLayout.NORTH);
-        p.add(new JScrollPane(waitingOrdersTable), BorderLayout.CENTER);
-        JPanel south = new JPanel(new FlowLayout(FlowLayout.LEFT));
-        south.add(refreshBtn);
-        p.add(south, BorderLayout.SOUTH);
-        return p;
-    }
-
     private JTable requestsTable;
 
     private JPanel buildRequestsTab() {
@@ -201,9 +242,8 @@ public class StorekeeperWindow extends JFrame {
                 new String[]{"ID", "Zákazka", "Diel", "Qty", "Cena (€)", "Stav"});
         refreshRequestsTable();
 
-        // skladník vyplní cenu a potvrdí objednanie
-        JTextField priceF = UIUtils.formField(8);
-        JButton orderBtn  = UIUtils.primaryButton("✅ Objednať (doplniť cenu)");
+        JTextField priceF  = UIUtils.formField(8);
+        JButton orderBtn   = UIUtils.primaryButton(" Objednať (doplniť cenu)");
         JButton refreshBtn = UIUtils.outlineButton("Obnoviť");
 
         orderBtn.addActionListener(e -> {
@@ -217,10 +257,8 @@ public class StorekeeperWindow extends JFrame {
                 UIUtils.showError(this, "Neplatná cena."); return;
             }
 
-            // skladník doplní cenu → fulfillRequest
             inventory.fulfillRequest(reqId, price);
 
-            // nájdi požiadavku a pridaj diel do zákazky so správnou cenou
             inventory.getAllRequests().stream()
                     .filter(r -> r.getRequestId().equals(reqId))
                     .findFirst()
@@ -245,6 +283,7 @@ public class StorekeeperWindow extends JFrame {
             UIUtils.showInfo(this, "Objednávka potvrdená.\nCena: " + price + " €\nMechanik bol notifikovaný.");
             priceF.setText("");
             refreshRequestsTable();
+            refreshDeliveryCombo(); // objednaný diel sa teraz objaví v comboboxe doručenia
         });
 
         refreshBtn.addActionListener(e -> refreshRequestsTable());
@@ -274,6 +313,29 @@ public class StorekeeperWindow extends JFrame {
             });
         }
     }
+
+    // =========================================================
+    // TAB 3 – Orders waiting for parts
+    // =========================================================
+    private JPanel buildWaitingOrdersTab() {
+        JPanel p = new JPanel(new BorderLayout(8, 8));
+        p.setBorder(BorderFactory.createEmptyBorder(12, 12, 12, 12));
+
+        waitingOrdersTable = UIUtils.buildTable(
+                new String[]{"ID zákazky", "Popis", "Potrebné diely"});
+        refreshWaitingOrders();
+
+        JButton refreshBtn = UIUtils.primaryButton("🔄 Obnoviť");
+        refreshBtn.addActionListener(e -> refreshWaitingOrders());
+
+        p.add(UIUtils.sectionLabel("Zákazky čakajúce na diely"), BorderLayout.NORTH);
+        p.add(new JScrollPane(waitingOrdersTable), BorderLayout.CENTER);
+        JPanel south = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        south.add(refreshBtn);
+        p.add(south, BorderLayout.SOUTH);
+        return p;
+    }
+
     private void refreshWaitingOrders() {
         DefaultTableModel m = (DefaultTableModel) waitingOrdersTable.getModel();
         m.setRowCount(0);
@@ -300,10 +362,48 @@ public class StorekeeperWindow extends JFrame {
             if (allAvailable) {
                 orderService.setStatus(o.getOrderId(), OrderStatus.OPRAVA);
                 ctx.getNotificationManager().notifyMechanic(o.getMechanicId(),
-                        "Všetky diely pre zákazku #" + o.getOrderId().substring(0, 8) + " sú dostupné. Môžete začať opravu.");
-                notifPanel.addNotification("Zákazka #" + o.getOrderId().substring(0, 8) + " – diely dostupné, stav zmenený na Oprava.");
+                        "Všetky diely pre zákazku #" + o.getOrderId().substring(0, 8)
+                                + " sú dostupné. Môžete začať opravu.");
+                notifPanel.addNotification("Zákazka #" + o.getOrderId().substring(0, 8)
+                        + " – diely dostupné, stav zmenený na Oprava.");
             }
         }
         refreshWaitingOrders();
+    }
+
+    // =========================================================
+    // Pomocná trieda pre položky v comboboxe doručenia
+    // =========================================================
+    private static class OrderedPartItem {
+        private final PartRequest partRequest;
+        private final SparePart   sparePart;
+
+        /** Položka z požiadavky mechanika (ORDERED) */
+        OrderedPartItem(PartRequest req) {
+            this.partRequest = req;
+            this.sparePart   = null;
+        }
+
+        /** Položka z existujúceho skladu */
+        OrderedPartItem(SparePart sp) {
+            this.sparePart   = sp;
+            this.partRequest = null;
+        }
+
+        boolean isFromInventory() { return sparePart != null; }
+        PartRequest getPartRequest() { return partRequest; }
+        SparePart   getSparePart()   { return sparePart; }
+
+        @Override
+        public String toString() {
+            if (partRequest != null) {
+                return "[Objednané] " + partRequest.getPartName()
+                        + " – zákazka " + partRequest.getOrderId().substring(0, 8)
+                        + " (" + String.format("%.2f €", partRequest.getFinalPrice()) + ")";
+            } else {
+                return "[Sklad] " + sparePart.getName()
+                        + " [" + sparePart.getPartId() + "]";
+            }
+        }
     }
 }
