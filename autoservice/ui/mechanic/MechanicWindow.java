@@ -16,12 +16,7 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
 
-/**
- * Mechanic window.
- * Opravy:
- *  - Oprava č.4: Mechanik zadá výsledok diagnostiky do textového poľa
- *  - Oprava č.5: Po dokončení opravy sa vykonané práce zapíšu do servisnej knižky
- */
+
 public class MechanicWindow extends JFrame {
 
     private final Mechanic employee;
@@ -38,11 +33,15 @@ public class MechanicWindow extends JFrame {
     public MechanicWindow(Mechanic employee) {
         super("AutoServis – " + employee.getRole() + ": " + employee.getFullName());
         this.employee = employee;
-        ctx.getNotificationManager().addInAppListener(msg -> {
-            if (msg.contains("MECHANIK " + employee.getEmployeeId()) || msg.contains("MECHANIK")) {
+
+        // Use addMechanicListener so pending notifications are flushed immediately
+        String mechId = String.valueOf(employee.getEmployeeId());
+        ctx.getNotificationManager().addMechanicListener(mechId, msg -> {
+            if (msg.contains("MECHANIK " + mechId) || msg.contains("MECHANIK")) {
                 notifPanel.addNotification(msg);
             }
         });
+
         buildUI();
         setSize(1020, 720);
         setLocationRelativeTo(null);
@@ -69,8 +68,6 @@ public class MechanicWindow extends JFrame {
 
     // =========================================================
     // TAB 1 – Assigned orders
-    // Oprava č.4: pole na výsledok diagnostiky
-    // Oprava č.5: zápis do servisnej knižky pri dokončení
     // =========================================================
     private JPanel buildAssignedTab() {
         JPanel p = new JPanel(new BorderLayout(8, 8));
@@ -80,12 +77,10 @@ public class MechanicWindow extends JFrame {
                 new String[]{"ID", "Popis", "Stav", "Termín", "Cena (€)"});
         refreshAssigned();
 
-        // ── Detail zákazky ────────────────────────────────────
         JTextArea detailArea = new JTextArea(4, 40);
         detailArea.setEditable(false);
         detailArea.setBorder(BorderFactory.createTitledBorder("Detail zákazky"));
 
-        // ── Výsledok diagnostiky (oprava č.4) ────────────────
         JTextArea diagResultArea = new JTextArea(3, 40);
         diagResultArea.setLineWrap(true);
         diagResultArea.setWrapStyleWord(true);
@@ -105,19 +100,15 @@ public class MechanicWindow extends JFrame {
             }
             String result = diagResultArea.getText().trim();
             if (result.isEmpty()) { UIUtils.showError(this, "Zadajte výsledok diagnostiky."); return; }
-
-            // Uloží výsledok diagnostiky do poznámok zákazky
             String existing = o.getNotes() != null ? o.getNotes() + "\n" : "";
             o.setNotes(existing + "[Diagnostika] " + result);
             ctx.getOrderRepository().save(o);
-
             UIUtils.showInfo(this, "Výsledok diagnostiky uložený.");
             diagResultArea.setText("");
             updateDetail(detailArea);
         });
         diagPanel.add(saveDiagBtn, BorderLayout.EAST);
 
-        // ── Tlačidlá stavov ───────────────────────────────────
         JButton startBtn    = UIUtils.primaryButton("▶ Spustiť diagnostiku");
         JButton repairBtn   = UIUtils.primaryButton("🔧 Začať opravu");
         JButton completeBtn = UIUtils.successButton(" Dokončiť opravu");
@@ -185,26 +176,19 @@ public class MechanicWindow extends JFrame {
         refreshAssigned();
     }
 
-    /**
-     * Dokončenie opravy – oprava č.5:
-     * Vykonané práce sa zapíšu do servisnej knižky vozidla.
-     */
     private void doComplete() {
         Order o = getSelectedOrder();
         if (o == null) { UIUtils.showError(this, "Vyberte zákazku."); return; }
 
-        // Zostaviť záznam pre servisnú knižku
         DateTimeFormatter fmt = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm");
         StringBuilder record = new StringBuilder();
         record.append("Dátum: ").append(LocalDateTime.now().format(fmt)).append("\n");
         record.append("Mechanik: ").append(employee.getFullName()).append("\n");
         record.append("Zákazka: #").append(o.getOrderId().substring(0, 8)).append("\n");
         record.append("Popis: ").append(o.getDescription()).append("\n");
-
         if (o.getNotes() != null && !o.getNotes().isBlank()) {
             record.append("Poznámky/Diagnostika: ").append(o.getNotes()).append("\n");
         }
-
         if (!o.getWorkItems().isEmpty()) {
             record.append("Vykonané práce:\n");
             for (WorkItem wi : o.getWorkItems()) {
@@ -222,15 +206,11 @@ public class MechanicWindow extends JFrame {
         }
         record.append("Celková cena: ").append(String.format("%.2f €", o.getTotalCost()));
 
-        // Zapísať do servisnej knižky
         if (o.getVehicleId() != null) {
             VehicleCard card = ctx.getVehicleManager().getVehicleCard(o.getVehicleId());
-            if (card != null) {
-                card.addServiceRecord(record.toString());
-            }
+            if (card != null) card.addServiceRecord(record.toString());
         }
 
-        // Uzavrieť zákazku
         orderService.completeRepair(o.getOrderId());
         UIUtils.showInfo(this, "Oprava dokončená. Zákazka uzavretá.\nZáznam bol pridaný do servisnej knižky vozidla.");
         refreshAssigned();
@@ -295,7 +275,7 @@ public class MechanicWindow extends JFrame {
             try { qty = Integer.parseInt(reqQtyF.getText().trim()); } catch (NumberFormatException ignored) {}
             Order o = resolveSelectedOrder(orderBox);
             if (o == null) return;
-            PartRequest req = inventory.createRequest(o.getOrderId(), employee.getEmail(), name, qty);
+            PartRequest req = inventory.createRequest(o.getOrderId(), String.valueOf(employee.getEmployeeId()), name, qty);
             orderService.setStatus(o.getOrderId(), OrderStatus.CAKA_NA_DIELY);
             ctx.getOrderRepository().save(o);
             ctx.getNotificationManager().notifyStorekeeper("SKLADNIK",

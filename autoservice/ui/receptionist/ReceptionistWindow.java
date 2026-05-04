@@ -20,6 +20,7 @@ import java.util.List;
  * Opravy:
  *  - Príjem vozidla: pole na poznámky + nefunkčné tlačidlo Nahrať fotku
  *  - Príjem vozidla: zobrazenie servisnej knižky vozidla
+ *  - Príjem vozidla: uzavretá zákazka sa nedá prijať znova
  */
 public class ReceptionistWindow extends JFrame {
 
@@ -104,8 +105,6 @@ public class ReceptionistWindow extends JFrame {
 
     // =========================================================
     // TAB 2 – Receive vehicle (UC05)
-    // Oprava č.2: poznámky + tlačidlo fotky
-    // Oprava č.3: servisná knižka vozidla
     // =========================================================
     private JPanel buildReceiveVehicleTab() {
         JPanel p = new JPanel(new BorderLayout(8, 8));
@@ -123,7 +122,7 @@ public class ReceptionistWindow extends JFrame {
                 BorderFactory.createEmptyBorder(4, 6, 4, 6)));
 
         JButton photoBtn = new JButton("📷 Nahrať fotky vozidla");
-        photoBtn.setEnabled(false); // nefunkčné – placeholder
+        photoBtn.setEnabled(false);
         photoBtn.setToolTipText("Funkcia nahrávania fotografií nie je v demo verzii dostupná.");
         photoBtn.setForeground(UIUtils.TEXT_MUTED);
 
@@ -135,7 +134,7 @@ public class ReceptionistWindow extends JFrame {
         // ── Servisná knižka ───────────────────────────────────
         JTextArea serviceBookArea = new JTextArea(6, 40);
         serviceBookArea.setEditable(false);
-        serviceBookArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        serviceBookArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 13));
         serviceBookArea.setBackground(UIUtils.ACCENT_LIGHT);
         serviceBookArea.setBorder(BorderFactory.createCompoundBorder(
                 BorderFactory.createLineBorder(UIUtils.BORDER_COLOR),
@@ -144,7 +143,6 @@ public class ReceptionistWindow extends JFrame {
         serviceBookPanel.setBorder(BorderFactory.createTitledBorder("📖 Servisná knižka vozidla"));
         serviceBookPanel.add(new JScrollPane(serviceBookArea), BorderLayout.CENTER);
 
-        // ── Aktualizovať servisnú knižku pri výbere zákazky ──
         activeOrderTable.getSelectionModel().addListSelectionListener(ev -> {
             if (ev.getValueIsAdjusting()) return;
             int row = activeOrderTable.getSelectedRow();
@@ -176,15 +174,14 @@ public class ReceptionistWindow extends JFrame {
         });
 
         // ── Tlačidlá ─────────────────────────────────────────
-        JButton receiveBtn  = UIUtils.primaryButton("📥 Prijať vozidlo");
-        JButton handoverBtn = UIUtils.successButton("📤 Odovzdať vozidlo zákazníkovi");
-        JButton refreshBtn  = UIUtils.primaryButton("🔄 Obnoviť");
+        JButton receiveBtn  = UIUtils.primaryButton("Prijať vozidlo");
+        JButton handoverBtn = UIUtils.successButton("Odovzdať vozidlo zákazníkovi");
+        JButton refreshBtn  = UIUtils.primaryButton("Obnoviť");
 
         receiveBtn.addActionListener(e -> doReceiveVehicle(receiveNotesArea));
         handoverBtn.addActionListener(e -> doHandoverVehicle());
         refreshBtn.addActionListener(e -> { refreshActiveOrders(); serviceBookArea.setText(""); });
 
-        // ── Layout ────────────────────────────────────────────
         JPanel southForms = new JPanel(new GridLayout(2, 1, 0, 6));
         southForms.add(notesPanel);
         southForms.add(serviceBookPanel);
@@ -228,7 +225,18 @@ public class ReceptionistWindow extends JFrame {
                 .findFirst().orElse(null);
         if (target == null) return;
 
-        // Pridať poznámky technika do zákazky
+        // Oprava: uzavretú zákazku nie je možné prijať znova
+        if (target.getStatus() == OrderStatus.UZAVRETA) {
+            UIUtils.showError(this, "Táto zákazka je už uzavretá a vozidlo bolo odovzdané.\nPríjem nie je možný.");
+            return;
+        }
+        // Zabrániť opätovnému príjmu zákazky, ktorá nie je v stave REZERVOVANA
+        if (target.getStatus() != OrderStatus.REZERVOVANA) {
+            UIUtils.showError(this, "Vozidlo pre túto zákazku už bolo prijaté (stav: "
+                    + target.getStatus().getDisplayName() + ").\nPríjem nie je možný.");
+            return;
+        }
+
         String notes = notesArea.getText().trim();
         if (!notes.isEmpty()) {
             String existing = target.getNotes() != null ? target.getNotes() + "\n" : "";
@@ -238,7 +246,7 @@ public class ReceptionistWindow extends JFrame {
 
         orderService.receiveVehicle(target.getOrderId(), List.of());
         notesArea.setText("");
-        UIUtils.showInfo(this, "Vozidlo prijaté do servisu.\nZákazka prešla do stavu: Diagnostika.");
+        UIUtils.showInfo(this, "Vozidlo prijaté do servisu.\nZákazka prešla do stavu: Čaká na priradenie.");
         refreshActiveOrders();
         notifPanel.addNotification("Vozidlo prijaté – zákazka #" + shortId);
     }

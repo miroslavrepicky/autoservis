@@ -196,7 +196,7 @@ public class OrderService {
     public void receiveVehicle(String orderId, List<String> photoPaths) {
         Order order = orderRepository.findById(orderId);
         if (order == null) return;
-        order.setStatus(OrderStatus.DIAGNOSTIKA);
+        order.setStatus(OrderStatus.CAKA_NA_PRIRADENIE);
         orderRepository.save(order);
         notificationManager.notifyEmployee("receptionist",
             "Vozidlo prijaté do servisu, zákazka: #" + orderId.substring(0, 8));

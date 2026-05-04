@@ -136,8 +136,8 @@ public final class UIUtils {
         user.setFont(user.getFont().deriveFont(Font.PLAIN, 12f));
 
         JButton logoutBtn = new JButton("Odhlásiť");
-        logoutBtn.setForeground(Color.WHITE);
-        logoutBtn.setBackground(new Color(180, 60, 60));
+        logoutBtn.setForeground(new Color(20, 20, 20));
+        logoutBtn.setBackground(new Color(220, 80, 80));
         logoutBtn.setFont(logoutBtn.getFont().deriveFont(Font.BOLD, 12f));
         logoutBtn.setBorder(BorderFactory.createEmptyBorder(4, 12, 4, 12));
         logoutBtn.setFocusPainted(false);

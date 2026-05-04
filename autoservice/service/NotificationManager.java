@@ -7,25 +7,27 @@ import com.autoservice.notification.SMSNotification;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 
 public class NotificationManager {
     private final List<Consumer<String>> inAppListeners = new ArrayList<>();
 
+    // Pending notifications per mechanicId – delivered when mechanic registers listener
+    private final Map<String, List<String>> pendingMechanicNotifs = new ConcurrentHashMap<>();
+
     public void alertReceptionTechnician(String message) {
         fireInApp("[PRIJÍMACÍ TECHNIK] " + message);
     }
 
-    public void composeMessage(String orderId, String state) {
-        // Compose message text
-    }
+    public void composeMessage(String orderId, String state) {}
 
     public String formatMessage(String raw) {
         return raw.trim();
     }
 
     public String chooseChannel(String recipient) {
-        // Simple heuristic: if recipient contains @, use email
         if (recipient.contains("@")) return "email";
         return "sms";
     }
@@ -41,7 +43,12 @@ public class NotificationManager {
     }
 
     public void notifyMechanic(String mechanicId, String message) {
-        fireInApp("[MECHANIK " + mechanicId + "] " + message);
+        String tagged = "[MECHANIK " + mechanicId + "] " + message;
+        fireInApp(tagged);
+        // Store as pending so the mechanic sees it even after logging in later
+        pendingMechanicNotifs
+                .computeIfAbsent(mechanicId, k -> new ArrayList<>())
+                .add(tagged);
     }
 
     public void notifyStorekeeper(String storekeeperInfo, String message) {
@@ -81,9 +88,26 @@ public class NotificationManager {
         sendNotification(new EmailNotification(), email, message);
     }
 
-    /** Register a listener for in-app notifications (UI components hook here) */
+    /**
+     * Register a listener for in-app notifications.
+     * mechanicId – when non-null, pending notifications for that mechanic are
+     * immediately delivered to the new listener.
+     */
     public void addInAppListener(Consumer<String> listener) {
         inAppListeners.add(listener);
+    }
+
+    /**
+     * Register mechanic listener and flush any pending notifications for that mechanic.
+     */
+    public void addMechanicListener(String mechanicId, Consumer<String> listener) {
+        inAppListeners.add(listener);
+        List<String> pending = pendingMechanicNotifs.remove(mechanicId);
+        if (pending != null) {
+            for (String msg : pending) {
+                listener.accept(msg);
+            }
+        }
     }
 
     private void fireInApp(String message) {
